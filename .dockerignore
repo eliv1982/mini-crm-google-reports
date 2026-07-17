@@ -1,0 +1,16 @@
+.git
+.agents
+.venv
+venv
+__pycache__
+.pytest_cache
+.pytest_tmp*
+.env
+credentials
+token*.json
+token*.pickle
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+tests
+gui
