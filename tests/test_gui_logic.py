@@ -5,6 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# gui.app and gui.dialogs import tkinter at module level; skip on Pythons built without Tk.
+pytest.importorskip("tkinter", exc_type=ImportError)
+
 from gui.app import (
     EntityTab,
     GUIValidationError,

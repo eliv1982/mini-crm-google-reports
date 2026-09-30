@@ -1,317 +1,255 @@
 # Mini CRM Google Reports
 
-Desktop mini-CRM с FastAPI backend, SQLite, Tkinter GUI и автоматическим экспортом аналитических отчетов в Google Sheets.
+An educational desktop mini-CRM built as a portfolio project. It manages clients, deals and tasks through a Tkinter GUI backed by a FastAPI service and a SQLite database, and it exports analytics reports to Google Sheets.
 
-## Возможности
+## Features
 
-- управление клиентами: создание, просмотр, редактирование, удаление и архивирование;
-- управление сделками: создание, просмотр, редактирование, удаление и привязка к клиенту;
-- управление задачами: создание, просмотр, редактирование, удаление и связи с клиентами и сделками;
-- связи между сущностями Clients -> Deals -> Tasks с nullable reference-полями;
-- поиск по Clients, Deals и Tasks через HTTP API;
-- Complete / Reopen для задач;
-- генерация реалистичных тестовых данных через HTTP API backend;
-- экспорт отчетов Clients / Deals / Tasks в Google Sheets;
-- расчет аналитики по клиентам, сделкам и задачам;
-- открытие созданного отчета и копирование его URL прямо из GUI.
+- Clients, deals and tasks with create, view, edit and delete; clients can also be archived and tasks can be completed or reopened.
+- Nullable relations: a deal can reference a client, and a task can reference a client, a deal, both or neither.
+- Search on all three entities through the HTTP API.
+- Analytics reports (clients, deals, tasks) exported as new Google Spreadsheets, from the GUI or from a CLI.
+- A demo-data generator that fills a running backend through its HTTP API.
 
-## Архитектура
+## Architecture
 
 ```text
-Tkinter GUI
-    |
-    | HTTP
-    v
-FastAPI backend
-    |
-    v
-SQLite
-
-Tkinter / ReportExporter
-    |
-    +--> OAuth2 User -> Google Drive API -> Create Spreadsheet
-    |
-    +--> Service Account -> Google Sheets API -> Write / Format
+Tkinter GUI  ──HTTP──▶  FastAPI backend  ──▶  SQLite
+     │
+     └── reporting layer (analytics + exporter)
+              ├── Google Drive API  (user OAuth)      creates the spreadsheet in a Drive folder
+              └── Google Sheets API (service account) writes and formats the content
 ```
 
-CRM backend работает в Docker и отвечает только за HTTP API и SQLite-хранилище. Google OAuth2 и Google API используются на стороне локального desktop-приложения и CLI-скриптов, потому что именно там доступны пользовательский браузер, локальные credential-файлы и OAuth flow для Desktop App. Из-за этого backend container не получает Google credentials и не должен хранить их внутри себя.
+- **Backend** (`backend/`): FastAPI application with a SQLite database. It knows nothing about Google.
+- **Desktop GUI** (`gui/`, `run_gui.py`): Tkinter/ttk client that talks to the backend over HTTP. The interface is in English.
+- **Reporting** (`reports/`): fetches all records from the backend API (paginated), computes analytics, and writes the report.
+- **Google integration** (`google_integration/`):
+  - *Google Drive, user OAuth.* A Desktop-app OAuth client authorizes you in the browser once. The token is stored locally and is used to create a spreadsheet inside the configured Drive folder.
+  - *Google Sheets, service account.* A service account writes and formats the created spreadsheet. It needs Editor access to that Drive folder.
 
-## Структура проекта
+Only the backend is containerized. The GUI, the report export and the Google credentials stay on the host machine, because they need a browser, a display and local credential files.
 
-```text
-mini-crm-google-reports/
-├── backend/
-│   ├── repositories/
-│   │   ├── clients.py
-│   │   ├── deals.py
-│   │   ├── errors.py
-│   │   └── tasks.py
-│   ├── routers/
-│   │   ├── clients.py
-│   │   ├── deals.py
-│   │   └── tasks.py
-│   ├── database.py
-│   ├── main.py
-│   └── schemas.py
-├── credentials/
-├── data/
-├── google_integration/
-│   ├── config.py
-│   ├── google_drive.py
-│   └── google_sheets.py
-├── gui/
-│   ├── api_client.py
-│   ├── app.py
-│   └── dialogs.py
-├── reports/
-│   ├── analytics.py
-│   ├── api_client.py
-│   └── exporter.py
-├── scripts/
-│   ├── export_reports.py
-│   ├── fill_test_data.py
-│   ├── smoke_test_backend.py
-│   ├── smoke_test_google_drive.py
-│   └── smoke_test_google_integration.py
-├── tests/
-│   ├── test_backend_api.py
-│   ├── test_fill_test_data.py
-│   ├── test_google_drive.py
-│   ├── test_google_sheets.py
-│   ├── test_gui_api_client.py
-│   ├── test_gui_logic.py
-│   ├── test_reports_analytics.py
-│   ├── test_reports_exporter.py
-│   └── ...
-├── .dockerignore
-├── .env.example
-├── .gitignore
-├── docker-compose.yml
-├── Dockerfile
-├── README.md
-├── requirements.txt
-└── run_gui.py
-```
+## Prerequisites
 
-## Технологии
+- **Python 3.12** is what the project is developed on and what the Docker image uses. The test suite also passes on Python 3.11 and 3.14 (see [Testing](#testing)). Other versions are untested.
+- **Tkinter** for the desktop GUI. It ships with the Python installers for Windows and macOS. On Debian/Ubuntu install it separately (`sudo apt install python3-tk`); other Linux distributions have an equivalent package. Check with `python -m tkinter`. The backend, the CLI scripts and most tests do not need Tk.
+- **Docker** (optional) to run the backend in a container.
+- **A Google Cloud project** (only for report export); see [Google setup](#google-setup).
 
-- Python
-- FastAPI
-- sqlite3
-- Pydantic
-- Tkinter / ttk
-- Docker / Docker Compose
-- Google Drive API
-- Google Sheets API
-- OAuth2
-- Google Service Account
-- Faker
-- pytest
-- requests
+## Installation
 
-## Модель данных
+Create a virtual environment and install the dependencies.
 
-`Clients`
-- хранят имя, компанию, email, телефон, статус и timestamps;
-- статус ограничен значениями `active` и `archived`.
-
-`Deals`
-- хранят title, amount, status, expected_close_date и timestamps;
-- `client_id` может быть `NULL`, поэтому сделка может существовать без привязки к клиенту;
-- при удалении клиента связанный `client_id` переводится в `NULL` через `ON DELETE SET NULL`.
-
-`Tasks`
-- хранят title, description, due_date, completed и timestamps;
-- `client_id` и `deal_id` являются nullable;
-- задача может быть связана только с клиентом, только со сделкой, сразу с обеими сущностями или быть без связей;
-- при удалении клиента или сделки соответствующие reference-поля переводятся в `NULL` через `ON DELETE SET NULL`.
-
-## Подготовка Google Cloud
-
-1. Включите Google Drive API в Google Cloud project.
-2. Включите Google Sheets API в том же project.
-3. Настройте OAuth consent screen / Google Auth Platform.
-4. Создайте OAuth Desktop Client.
-5. Добавьте свою учетную запись в `Test users`, если приложение работает в Testing mode.
-6. Скачайте OAuth client JSON.
-7. Создайте или используйте service account.
-8. Скачайте service account JSON.
-9. Создайте папку в Google Drive для отчетов.
-10. Выдайте service account доступ `Editor` к этой папке.
-
-README намеренно не содержит реальных email, folder IDs, client secrets или private keys.
-
-## Credentials
-
-Локальные пути:
-
-- `credentials/client_secret.json`
-- `credentials/service-account.json`
-- `credentials/token.json`
-
-`token.json` появляется после первой успешной OAuth-авторизации пользователя. Все credential-файлы, OAuth tokens и их варианты исключены из Git и не должны попадать в commit.
-
-## Environment
-
-Создайте локальный `.env` из шаблона:
-
-```powershell
-Copy-Item .env.example .env
-```
-
-Пример структуры `.env`:
-
-```dotenv
-DATABASE_PATH=data/crm.db
-BACKEND_HOST=0.0.0.0
-BACKEND_PORT=8000
-BACKEND_URL=http://localhost:8000
-
-GOOGLE_OAUTH_CLIENT_SECRET_PATH=credentials/client_secret.json
-GOOGLE_OAUTH_TOKEN_PATH=credentials/token.json
-GOOGLE_SERVICE_ACCOUNT_PATH=credentials/service-account.json
-GOOGLE_DRIVE_FOLDER_ID=your-google-drive-folder-id
-```
-
-Переменные окружения:
-
-- `DATABASE_PATH`
-- `BACKEND_HOST`
-- `BACKEND_PORT`
-- `BACKEND_URL`
-- `GOOGLE_OAUTH_CLIENT_SECRET_PATH`
-- `GOOGLE_OAUTH_TOKEN_PATH`
-- `GOOGLE_SERVICE_ACCOUNT_PATH`
-- `GOOGLE_DRIVE_FOLDER_ID`
-
-## Установка
+Windows (PowerShell):
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-pip install -r requirements.txt
 ```
 
-После установки создайте `.env` из `.env.example` и заполните только свои локальные значения.
+macOS / Linux (use `python3` if `python` is not available):
 
-## Запуск backend
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+Then, on any platform:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+Requirements files:
+
+| File | Contents |
+| --- | --- |
+| `requirements.txt` | Everything needed to run the application locally: backend, GUI, reporting, Google integration. |
+| `requirements-backend.txt` | Backend only. Installed by the Docker image and included by `requirements.txt`. |
+| `requirements-dev.txt` | `requirements.txt` plus the test tooling and the demo-data generator (`Faker`). |
+
+Versions are given as compatible ranges (a tested lower bound and a cap at the next major release). Transitive dependencies are not pinned.
+
+## Configuration
+
+Copy the template and edit the local copy:
 
 ```powershell
+Copy-Item .env.example .env      # Windows (PowerShell)
+```
+
+```bash
+cp .env.example .env             # macOS / Linux
+```
+
+Variables read by the code:
+
+| Variable | Used by | Purpose |
+| --- | --- | --- |
+| `DATABASE_PATH` | backend | SQLite file. Relative paths are resolved from the project root. Default: `data/crm.db`. |
+| `BACKEND_URL` | GUI, reports, scripts | Where clients reach the backend. Default: `http://localhost:8000`. |
+| `GOOGLE_OAUTH_CLIENT_SECRET_PATH` | Drive | OAuth Desktop client JSON downloaded from Google Cloud. |
+| `GOOGLE_OAUTH_TOKEN_PATH` | Drive | Where the OAuth token is stored after the first authorization. |
+| `GOOGLE_SERVICE_ACCOUNT_PATH` | Sheets | Service account key JSON. |
+| `GOOGLE_DRIVE_FOLDER_ID` | reports | ID of the Drive folder that receives the reports. |
+
+`.env.example` also lists `BACKEND_HOST` and `BACKEND_PORT`. The Python code does not read them; the backend port is set by the `uvicorn` command (`8000` in the Dockerfile and Compose file).
+
+Real environment variables take precedence over values in `.env`.
+
+## Google setup
+
+Only needed for report export. The rest of the application works without it.
+
+1. In a Google Cloud project, enable the **Google Drive API** and the **Google Sheets API**.
+2. Configure the OAuth consent screen. While the app is in *Testing* mode, add your Google account as a test user.
+3. Create an **OAuth client of type Desktop app** and download its JSON.
+4. Create a **service account** and download its JSON key.
+5. Create a Google Drive folder for the reports and share it with the service account's email address as **Editor**.
+6. Put the two JSON files in `credentials/` (or point the environment variables elsewhere) and set `GOOGLE_DRIVE_FOLDER_ID` to the folder's ID (the last segment of the folder URL).
+
+The default locations from `.env.example` are:
+
+```text
+credentials/client_secret.json    OAuth client        (you provide)
+credentials/service-account.json  service account key (you provide)
+credentials/token.json            OAuth token         (created automatically)
+```
+
+On the first export, a browser window opens for the Google authorization and the token is saved to `GOOGLE_OAUTH_TOKEN_PATH`. Later runs reuse it.
+
+## Running the application
+
+### 1. Backend
+
+With Docker (development setup, see [Docker notes](#docker-notes)):
+
+```bash
 docker compose up -d --build
 docker compose ps
 ```
 
-Swagger:
+Or directly with Python, from the project root:
 
-- `http://localhost:8000/docs`
-
-Health:
-
-- `http://localhost:8000/health`
-
-Остановка:
-
-```powershell
-docker compose down
+```bash
+python -m uvicorn backend.main:app --reload
 ```
 
-SQLite persistence хранится в директории `./data`, поэтому база не теряется при перезапуске контейнера, пока каталог проекта сохраняется на диске.
+Either way the API is at `http://localhost:8000`, with interactive docs at `/docs` and a health check at `/health`. Stop the container with `docker compose down`.
 
-## Запуск GUI
+The SQLite database lives in `data/` and survives container restarts.
 
-```powershell
-python run_gui.py
-```
+### 2. Demo data (optional)
 
-Перед запуском GUI backend должен быть уже поднят и отвечать по `BACKEND_URL`.
+The generator needs `Faker`, so install the development requirements first (`python -m pip install -r requirements-dev.txt`). The backend must be running; the script writes through its HTTP API.
 
-## Генерация тестовых данных
-
-Небольшой запуск:
-
-```powershell
+```bash
 python -m scripts.fill_test_data --clients 5 --deals 5 --tasks 5 --seed 42
 ```
 
-Полный учебный seed:
+Counts default to 1000 each. `--seed` (default 42) seeds the random generators; client e-mail addresses also contain a per-run identifier, so running the script twice adds distinct records. `--base-url` overrides `BACKEND_URL`.
 
-```powershell
-python -m scripts.fill_test_data --clients 1000 --deals 1000 --tasks 1000 --seed 42
+### 3. Desktop GUI
+
+```bash
+python run_gui.py
 ```
 
-Генератор использует `requests`, `Faker` и HTTP API работающего backend. Прямая запись в SQLite не используется.
+The backend must already be running. Each tab (Clients, Deals, Tasks) has search, add, edit, delete and an **Export report** button. After an export, a dialog lets you open the spreadsheet or copy its URL. Tables show at most 100 records at a time; the related-record pickers in the Add/Edit forms load the full list.
 
-## Экспорт отчетов
+### 4. Exporting reports from the command line
 
-CLI-команды:
+With the backend running and the Google setup done:
 
-```powershell
+```bash
 python -m scripts.export_reports --type clients
 python -m scripts.export_reports --type deals
 python -m scripts.export_reports --type tasks
-python -m scripts.export_reports --type all
+python -m scripts.export_reports --type all      # default
 ```
 
-Что попадает в аналитику:
+Each report is a **new** Google Spreadsheet named `Mini CRM - <Clients|Deals|Tasks> Report - YYYY-MM-DD HH-MM` in the configured Drive folder. It has a summary block followed by a formatted table of all records:
 
-- `clients`: общее число клиентов, active / archived, наличие компании, самая частая компания, доля active;
-- `deals`: общее число сделок, суммы, средние значения, распределение по статусам, won amount, сделки с клиентом и без клиента;
-- `tasks`: общее число задач, completed / open, completion percentage, overdue open tasks, наличие связей client / deal.
+- **Clients:** totals, active/archived counts, clients with and without a company, most common company, share of active clients.
+- **Deals:** totals and amounts, averages, breakdown by status, won amount, deals with and without a client.
+- **Tasks:** totals, completed and open counts, completion percentage, overdue open tasks, tasks with a client, with a deal, and without any link.
 
-Экспортер использует pagination и загружает все записи из CRM API, даже если основная таблица GUI показывает только первые 100 строк. Это же относится к reference data для selection в формах Add/Edit.
+### Smoke tests (optional)
 
-## Smoke tests
+When run, these scripts call real services (the automated test suite only exercises them with fakes):
 
-```powershell
-python -m scripts.smoke_test_google_drive
-python -m scripts.smoke_test_google_integration
-python -m scripts.smoke_test_backend
+```bash
+python -m scripts.smoke_test_backend             # needs the running backend
+python -m scripts.smoke_test_google_drive        # needs Google OAuth setup
+python -m scripts.smoke_test_google_integration  # needs OAuth + service account setup
 ```
 
-- `smoke_test_google_drive`: проверяет OAuth-аутентификацию, создание Google Spreadsheet в Drive и чтение metadata, затем удаляет временный файл;
-- `smoke_test_google_integration`: проверяет связку Drive create -> spreadsheet_id -> Sheets write/read/format и выполняет cleanup временного spreadsheet;
-- `smoke_test_backend`: проверяет `/health`, CRUD-поток Client -> Deal -> Task, complete task и cleanup созданных CRM-сущностей.
+The Google smoke tests create a temporary spreadsheet and delete it afterwards; the backend smoke test creates a client, deal and task and removes them.
 
-## Tests
+## Testing
 
-Основная команда:
-
-```powershell
+```bash
+python -m pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-На момент финальной приемки проекта: `104` теста успешно пройдены командой `python -m pytest`.
+The suite uses fakes and temporary databases. It needs no running backend, no Google credentials and no network access to Google. Tests that import the Tkinter GUI are skipped automatically on a Python built without Tk; everything else still runs.
 
-## Безопасность
+The suite was run successfully in fresh virtual environments on Python 3.11, 3.12 and 3.14 in September 2026.
 
-- `.env` исключен из Git;
-- credential-файлы и OAuth token-файлы исключены из Git;
-- SQLite database-файлы исключены из Git;
-- `credentials` исключена из Docker build context через `.dockerignore`;
-- `.env`, token-файлы и database-файлы исключены из Docker build context;
-- backend container не получает Google credentials;
-- repository-слой использует parameterized SQL queries;
-- пользовательские ошибки не должны печатать Google secrets.
+## Docker notes
 
-## Ограничения MVP
+- Only the **backend** is containerized. `docker-compose.yml` defines a single `backend` service.
+- The image installs `requirements-backend.txt` only: no test tooling, no Google libraries, no GUI dependencies.
+- The setup is meant for development: the source (`./backend`) and the database directory (`./data`) are bind-mounted and `uvicorn` runs with `--reload`.
+- `.dockerignore` keeps `.env`, `credentials/`, token files, databases, `tests/` and `gui/` out of the build context, and Compose mounts only `./backend` and `./data`. The container never receives Google credentials.
+- The GUI and the report export run on the host and reach the container through `BACKEND_URL`.
 
-- приложение ориентировано на локальное desktop-использование;
-- в CRM нет пользовательской authentication / authorization;
-- используется SQLite и sync backend;
-- Docker configuration ориентирована на development и использует `uvicorn --reload`;
-- основные таблицы GUI показывают максимум 100 записей;
-- reference combobox получает полный список через pagination;
-- production deployment configuration не подготовлена.
+## Security and credentials
 
-## Дальнейшее развитие
+- `credentials/*.json`, token files, `.env` and SQLite databases are listed in `.gitignore`. **Never commit them.** Keep OAuth client files, service account keys and tokens on your machine only.
+- The Drive authorization requests the full `https://www.googleapis.com/auth/drive` scope; the Sheets client requests `https://www.googleapis.com/auth/spreadsheets`.
+- Give the service account access only to the reports folder.
+- Errors from the Google integration are designed not to echo credential contents or raw token-endpoint responses.
 
-- PostgreSQL или Supabase вместо SQLite;
-- web frontend вместо или вместе с Tkinter;
-- пользовательская authentication / authorization;
-- серверная pagination и sorting в UI;
-- searchable combobox / autocomplete вместо загрузки полного reference list;
-- background jobs для тяжелых экспортов;
-- расписание автоматических отчетов;
-- расширенная аналитика и dashboard;
-- production Docker setup;
-- persistent session / history / audit log при необходимости.
+## Limitations
+
+- Built for local, single-user desktop use. The API has **no authentication or authorization**; do not expose it to a network you do not trust.
+- SQLite with a synchronous backend; no migrations.
+- The Docker setup is for development (`--reload`, bind mounts), not a production deployment.
+- Each export creates a new spreadsheet; nothing is updated or deleted. If writing fails after the spreadsheet was created, the file stays in the Drive folder and the error message reports its ID and link.
+- Report export needs a Google Cloud project, a Drive folder and both credential types. The GUI tables show at most 100 records.
+- `BACKEND_HOST` and `BACKEND_PORT` in `.env.example` are not used by the code (see [Configuration](#configuration)).
+
+## Project structure
+
+```text
+mini-crm-google-reports/
+├── backend/             FastAPI app, SQLite access, routers, repositories, schemas
+├── gui/                 Tkinter desktop client (api_client, app, dialogs)
+├── reports/             Analytics, backend API client for reports, Google Sheets exporter
+├── google_integration/  Config loading, Drive client (OAuth), Sheets client (service account)
+├── scripts/             Report export CLI, demo-data generator, smoke tests
+├── tests/               Automated test suite
+├── credentials/         Local credential files (gitignored, only .gitkeep is tracked)
+├── data/                Local SQLite database (gitignored, only .gitkeep is tracked)
+├── run_gui.py           GUI entry point
+├── Dockerfile, docker-compose.yml, .dockerignore
+├── requirements.txt, requirements-backend.txt, requirements-dev.txt
+└── .env.example
+```
+
+## Data model
+
+- **clients**: name, company, email, phone, status (`active` or `archived`), timestamps.
+- **deals**: title, amount, status (`new`, `in_progress`, `won`, `lost`), expected close date, optional `client_id`, timestamps.
+- **tasks**: title, description, due date, completed flag, optional `client_id` and `deal_id`, timestamps.
+
+Deleting a client or deal sets the references that point to it to `NULL` (`ON DELETE SET NULL`); the dependent records are kept.
+
+## Possible next steps
+
+- Authentication for the API.
+- PostgreSQL instead of SQLite, with migrations.
+- Server-side pagination and sorting in the GUI.
+- Scheduled or background report exports.

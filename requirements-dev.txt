@@ -1,0 +1,13 @@
+# Test and development tooling on top of the application requirements.
+
+-r requirements.txt
+
+pytest>=9.1.1,<10
+# Required by fastapi.testclient.TestClient (used in tests/conftest.py).
+httpx>=0.28.1,<1
+# Imported directly by the tests (tests/auth_failures.py).
+google-auth-httplib2>=0.3.0,<1
+# Used by tests/credential_files.py to generate throwaway RSA keys.
+cryptography>=46.0.5,<51
+# Used only by the demo-data generator (scripts/fill_test_data.py) and its tests.
+Faker>=40.31.0,<41

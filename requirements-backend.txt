@@ -1,0 +1,10 @@
+# Backend only (FastAPI + SQLite). This is all the Docker image installs.
+# Lower bounds are versions the test suite is known to pass with; upper bounds stop
+# at the next major release. Transitive dependencies are intentionally not pinned.
+
+fastapi>=0.115.14,<1
+uvicorn[standard]>=0.32.1,<1
+pydantic>=2.12.5,<3
+# Required by pydantic's EmailStr, which backend/schemas.py uses.
+email-validator>=2.3.0,<3
+python-dotenv>=1.0.0,<2

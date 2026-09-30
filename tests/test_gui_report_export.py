@@ -8,6 +8,9 @@ from unittest.mock import Mock
 import httplib2
 import pytest
 
+# gui.app imports tkinter at module level; skip on Pythons built without Tk.
+pytest.importorskip("tkinter", exc_type=ImportError)
+
 from google_integration import (
     ConfigError,
     GoogleDriveClient,
