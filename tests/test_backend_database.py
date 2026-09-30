@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from backend.database import connection_context, initialize_database
+from backend.database import connection_context, contains_pattern, initialize_database
 
 
 def test_initialize_database_creates_tables(initialized_database_path: Path) -> None:
@@ -31,3 +31,10 @@ def test_initialize_database_creates_parent_directory(tmp_path: Path) -> None:
     initialize_database(database_path)
 
     assert database_path.exists()
+
+
+def test_contains_pattern_escapes_like_wildcards_and_escape_character() -> None:
+    assert contains_pattern("plain") == "%plain%"
+    assert contains_pattern("50%_off") == "%50\\%\\_off%"
+    assert contains_pattern("a\\b") == "%a\\\\b%"
+    assert contains_pattern("\\%") == "%\\\\\\%%"

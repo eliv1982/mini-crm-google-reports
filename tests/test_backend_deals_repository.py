@@ -90,3 +90,27 @@ def test_delete_deal_removes_record(initialized_database_path: Path) -> None:
 
     with pytest.raises(EntityNotFoundError):
         deals_repository.get_deal_by_id(created["id"], initialized_database_path)
+
+
+def test_search_deals_treats_wildcards_literally(initialized_database_path: Path) -> None:
+    def create(title: str) -> int:
+        return deals_repository.create_deal({"title": title}, initialized_database_path)["id"]
+
+    percent = create("100% Renewal")
+    create("1000 Renewal")
+    underscore = create("Upsell_Q3")
+    create("UpsellXQ3")
+    backslash = create("Path\\Deal")
+
+    def search(term: str) -> list[int]:
+        results = deals_repository.search_deals(
+            search=term,
+            database_path=initialized_database_path,
+        )
+        return [item["id"] for item in results]
+
+    assert search("%") == [percent]
+    assert search("100%") == [percent]
+    assert search("_") == [underscore]
+    assert search("upsell_q") == [underscore]
+    assert search("\\") == [backslash]

@@ -97,3 +97,33 @@ def test_task_filters_and_delete(initialized_database_path: Path) -> None:
 
     with pytest.raises(EntityNotFoundError):
         tasks_repository.get_task_by_id(second["id"], initialized_database_path)
+
+
+def test_search_tasks_treats_wildcards_literally(initialized_database_path: Path) -> None:
+    def create(title: str, description: str | None = None) -> int:
+        return tasks_repository.create_task(
+            {"title": title, "description": description},
+            initialized_database_path,
+        )["id"]
+
+    percent = create("Call 100% of leads")
+    create("Call 1000 leads")
+    title_underscore = create("Send_report")
+    create("SendXreport")
+    description_underscore = create("Plain title", "follow_up needed")
+    create("Other title", "followXup needed")
+    backslash = create("Path\\Task")
+
+    def search(term: str) -> list[int]:
+        results = tasks_repository.search_tasks(
+            search=term,
+            database_path=initialized_database_path,
+        )
+        return [item["id"] for item in results]
+
+    assert search("%") == [percent]
+    assert search("100%") == [percent]
+    assert search("_") == [title_underscore, description_underscore]
+    assert search("send_report") == [title_underscore]
+    assert search("follow_up") == [description_underscore]
+    assert search("\\") == [backslash]

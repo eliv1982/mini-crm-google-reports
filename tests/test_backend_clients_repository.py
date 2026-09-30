@@ -97,3 +97,33 @@ def test_list_clients_supports_pagination(initialized_database_path: Path) -> No
     )
 
     assert [item["id"] for item in paginated] == [second["id"], third["id"]]
+
+
+def test_search_clients_treats_wildcards_literally(initialized_database_path: Path) -> None:
+    def create(**fields: str) -> int:
+        return clients_repository.create_client(fields, initialized_database_path)["id"]
+
+    percent = create(name="100% Club")
+    create(name="1000 Club")
+    underscore = create(name="Snake_Case")
+    create(name="SnakeXCase")
+    backslash = create(name="Back\\slash")
+    company_underscore = create(name="Co One", company="Acme_Labs")
+    create(name="Co Two", company="AcmeXLabs")
+    email_underscore = create(name="Mail One", email="user_1@example.com")
+    create(name="Mail Two", email="userA1@example.com")
+
+    def search(term: str) -> list[int]:
+        results = clients_repository.search_clients(
+            search=term,
+            database_path=initialized_database_path,
+        )
+        return [item["id"] for item in results]
+
+    assert search("%") == [percent]
+    assert search("100%") == [percent]
+    assert search("_") == [underscore, company_underscore, email_underscore]
+    assert search("snake_case") == [underscore]
+    assert search("\\") == [backslash]
+    assert search("acme_labs") == [company_underscore]
+    assert search("user_1@") == [email_underscore]

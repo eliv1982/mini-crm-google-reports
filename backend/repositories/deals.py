@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from backend.database import connection_context, utc_now_iso
+from backend.database import connection_context, contains_pattern, utc_now_iso
 
 from .errors import DatabaseOperationError, EntityNotFoundError, InvalidReferenceError
 
@@ -122,8 +122,8 @@ def search_deals(
 
     normalized_search = (search or "").strip()
     if normalized_search:
-        conditions.append("title LIKE ? COLLATE NOCASE")
-        params.append(f"%{normalized_search}%")
+        conditions.append("title LIKE ? COLLATE NOCASE ESCAPE '\\'")
+        params.append(contains_pattern(normalized_search))
 
     if client_id is not None:
         conditions.append("client_id = ?")

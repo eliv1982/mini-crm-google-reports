@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from backend.database import connection_context, utc_now_iso
+from backend.database import connection_context, contains_pattern, utc_now_iso
 
 from .errors import DatabaseOperationError, EntityNotFoundError, InvalidReferenceError
 
@@ -137,11 +137,11 @@ def search_tasks(
 
     normalized_search = (search or "").strip()
     if normalized_search:
-        pattern = f"%{normalized_search}%"
+        pattern = contains_pattern(normalized_search)
         conditions.append(
             "("
-            "title LIKE ? COLLATE NOCASE OR "
-            "COALESCE(description, '') LIKE ? COLLATE NOCASE"
+            "title LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+            "COALESCE(description, '') LIKE ? COLLATE NOCASE ESCAPE '\\'"
             ")"
         )
         params.extend([pattern, pattern])

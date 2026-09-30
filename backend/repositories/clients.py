@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from backend.database import connection_context, utc_now_iso
+from backend.database import connection_context, contains_pattern, utc_now_iso
 
 from .errors import DatabaseOperationError, EntityNotFoundError
 
@@ -102,12 +102,12 @@ def search_clients(
 
     normalized_search = (search or "").strip()
     if normalized_search:
-        pattern = f"%{normalized_search}%"
+        pattern = contains_pattern(normalized_search)
         conditions.append(
             "("
-            "name LIKE ? COLLATE NOCASE OR "
-            "COALESCE(company, '') LIKE ? COLLATE NOCASE OR "
-            "COALESCE(email, '') LIKE ? COLLATE NOCASE"
+            "name LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+            "COALESCE(company, '') LIKE ? COLLATE NOCASE ESCAPE '\\' OR "
+            "COALESCE(email, '') LIKE ? COLLATE NOCASE ESCAPE '\\'"
             ")"
         )
         params.extend([pattern, pattern, pattern])

@@ -70,6 +70,16 @@ def utc_now_iso() -> str:
     )
 
 
+def contains_pattern(text: str) -> str:
+    """Build a LIKE pattern matching ``text`` literally as a substring.
+
+    Backslash is the escape character, so queries using this pattern must
+    add ``ESCAPE '\\'`` to the LIKE clause.
+    """
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
 def resolve_database_path(database_path: str | Path | None = None) -> Path:
     raw_path = database_path or os.getenv("DATABASE_PATH") or DEFAULT_DATABASE_PATH
     resolved_path = Path(raw_path).expanduser()

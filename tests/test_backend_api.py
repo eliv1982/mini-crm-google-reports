@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -190,3 +191,27 @@ def test_api_returns_404_for_missing_entities(client: TestClient) -> None:
     assert client.get("/deals/999").status_code == 404
     assert client.get("/tasks/999").status_code == 404
     assert client.post("/tasks/999/complete").status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("resource", "field"),
+    [("clients", "name"), ("deals", "title"), ("tasks", "title")],
+)
+@pytest.mark.parametrize(
+    ("term", "expected"),
+    [("%", ["100% Reliable"]), ("_", ["snake_case"])],
+)
+def test_search_treats_percent_and_underscore_literally(
+    client: TestClient,
+    resource: str,
+    field: str,
+    term: str,
+    expected: list[str],
+) -> None:
+    for value in ["100% Reliable", "1000 Reliable", "snake_case", "snakeXcase"]:
+        assert client.post(f"/{resource}", json={field: value}).status_code == 201
+
+    response = client.get(f"/{resource}", params={"search": term})
+
+    assert response.status_code == 200
+    assert [item[field] for item in response.json()] == expected
