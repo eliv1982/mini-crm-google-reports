@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from tkinter import messagebox, ttk
 from typing import Any, Callable, Sequence
 
-from reports import ReportExportError, ReportExportResult, ReportExporter
+from reports import EXPECTED_EXPORT_ERRORS, ReportExportResult, ReportExporter
 
 from .api_client import GUIAPIError, MiniCRMGUIAPIClient
 from .dialogs import FieldSpec, RecordDialog, ReportResultDialog, enable_clipboard_shortcuts
@@ -754,7 +754,11 @@ class MiniCRMApp:
             try:
                 result = dispatch_report_export(report_type)
             except Exception as error:
-                self.root.after(0, lambda: self._finish_report_export(button, error=error))
+                # Bind via a default argument: Python unbinds `error` when this
+                # except block exits, before the deferred callback runs.
+                self.root.after(
+                    0, lambda error=error: self._finish_report_export(button, error=error)
+                )
                 return
             self.root.after(0, lambda: self._finish_report_export(button, result=result))
 
@@ -771,8 +775,8 @@ class MiniCRMApp:
             button.configure(state="normal")
 
         if error is not None:
-            if isinstance(error, (ReportExportError, GUIValidationError)):
-                messagebox.showerror(WINDOW_TITLE, str(error))
+            if isinstance(error, (*EXPECTED_EXPORT_ERRORS, GUIValidationError)):
+                self.show_error("Report export failed.", error)
             else:
                 print(f"Unexpected report export error: {error}", file=sys.stderr)
                 messagebox.showerror(WINDOW_TITLE, "Report export failed.")

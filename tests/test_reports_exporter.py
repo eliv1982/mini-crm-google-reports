@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+import socket
 from datetime import datetime
 from unittest.mock import Mock
 
+import httplib2
 import pytest
+from google.auth.exceptions import RefreshError
 
+from google_integration import (
+    ConfigError,
+    GoogleDriveAuthenticationError,
+    GoogleDriveConfig,
+    GoogleDriveOperationError,
+    GoogleSheetsAPIError,
+    GoogleSheetsConfig,
+    SheetNotFoundError,
+)
+from reports import exporter as exporter_module
 from reports.exporter import ReportExportError, ReportExporter
+from tests.auth_failures import (
+    DRIVE_AUTH_FAILURES,
+    DRIVE_AUTH_REASON,
+    RAW_AUTH_DETAIL,
+    SHEETS_AUTH_FAILURES,
+    SHEETS_AUTH_REASON,
+    drive_client_failing_auth,
+    sheets_client_failing_auth,
+)
+from tests.transport_failures import (
+    RAW_DETAIL,
+    drive_client_failing_with,
+    sheets_client_failing_with,
+)
 
 
 def _build_exporter(
@@ -140,3 +167,174 @@ def test_exporter_raises_without_deleting_file_when_post_create_step_fails() -> 
         exporter.export_clients_report()
 
     drive_client.delete_file.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("failing_step", "error", "expected_cause"),
+    [
+        (
+            "write_range",
+            GoogleSheetsAPIError("Google Sheets API request failed while writing range 'A1'. HTTP status: 403."),
+            "HTTP status: 403",
+        ),
+        (
+            "freeze_rows",
+            SheetNotFoundError("Sheet 'Custom Sheet' was not found."),
+            "Sheet 'Custom Sheet' was not found",
+        ),
+    ],
+)
+def test_post_create_sheets_failure_keeps_cause_and_partial_export_details(
+    failing_step: str, error: Exception, expected_cause: str
+) -> None:
+    exporter, _, drive_client, sheets_client = _build_exporter(clients=[])
+    getattr(sheets_client, failing_step).side_effect = error
+
+    with pytest.raises(ReportExportError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert expected_cause in message
+    assert "spreadsheet_id=spreadsheet-123" in message
+    assert "web_view_link=https://example.test/report" in message
+    assert exc_info.value.__cause__ is error
+    drive_client.delete_file.assert_not_called()
+
+
+def test_post_create_failure_reports_empty_spreadsheet_reason() -> None:
+    exporter, _, _, sheets_client = _build_exporter(clients=[])
+    sheets_client.get_sheet_names.return_value = []
+
+    with pytest.raises(ReportExportError) as exc_info:
+        exporter.export_clients_report()
+
+    assert "does not expose any sheets" in str(exc_info.value)
+    assert "spreadsheet_id=spreadsheet-123" in str(exc_info.value)
+
+
+def test_post_create_unexpected_error_is_chained_without_leaking_its_message() -> None:
+    exporter, _, _, sheets_client = _build_exporter(clients=[])
+    unexpected = KeyError("internal-secret-detail")
+    sheets_client.write_range.side_effect = unexpected
+
+    with pytest.raises(ReportExportError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert "unexpected KeyError" in message
+    assert "internal-secret-detail" not in message
+    assert "spreadsheet_id=spreadsheet-123" in message
+    assert exc_info.value.__cause__ is unexpected
+
+
+def test_drive_failure_before_spreadsheet_exists_keeps_typed_error() -> None:
+    exporter, _, drive_client, _ = _build_exporter(clients=[])
+    error = GoogleDriveOperationError("Google Drive API request failed while creating spreadsheet. HTTP status: 404.")
+    drive_client.create_google_spreadsheet.side_effect = error
+
+    with pytest.raises(GoogleDriveOperationError) as exc_info:
+        exporter.export_clients_report()
+
+    assert exc_info.value is error
+    exporter.sheets_client_factory.assert_not_called()
+
+
+def test_drive_transport_failure_before_spreadsheet_exists_is_typed_and_chained() -> None:
+    exporter, _, _, _ = _build_exporter(clients=[])
+    transport_error = httplib2.ServerNotFoundError(RAW_DETAIL)
+    exporter.drive_client, _ = drive_client_failing_with(transport_error)
+
+    with pytest.raises(GoogleDriveOperationError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert "creating spreadsheet 'Mini CRM - Clients Report - 2026-07-17 12-45'" in message
+    assert "Network error: could not connect to Google" in message
+    assert RAW_DETAIL not in message
+    assert exc_info.value.__cause__ is transport_error
+    exporter.sheets_client_factory.assert_not_called()
+
+
+def test_drive_auth_failure_before_spreadsheet_exists_is_typed_and_chained() -> None:
+    exporter, _, _, _ = _build_exporter(clients=[])
+    exporter.drive_client, fake_http = drive_client_failing_auth(DRIVE_AUTH_FAILURES[0].values[0])
+
+    with pytest.raises(GoogleDriveAuthenticationError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert "creating spreadsheet 'Mini CRM - Clients Report - 2026-07-17 12-45'" in message
+    assert DRIVE_AUTH_REASON in message
+    assert RAW_AUTH_DETAIL not in message
+    assert isinstance(exc_info.value.__cause__, RefreshError)
+    assert fake_http.token_requests == 1
+    exporter.sheets_client_factory.assert_not_called()
+
+
+def test_post_create_sheets_auth_failure_keeps_spreadsheet_details_and_typed_cause() -> None:
+    exporter, _, drive_client, _ = _build_exporter(clients=[])
+    sheets_client, fake_http = sheets_client_failing_auth(
+        SHEETS_AUTH_FAILURES[0].values[0], "spreadsheet-123"
+    )
+    exporter.sheets_client_factory = Mock(return_value=sheets_client)
+
+    with pytest.raises(ReportExportError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert SHEETS_AUTH_REASON.rstrip(".") in message
+    assert "unexpected" not in message
+    assert RAW_AUTH_DETAIL not in message
+    assert "spreadsheet_id=spreadsheet-123" in message
+    assert "web_view_link=https://example.test/report" in message
+    sheets_error = exc_info.value.__cause__
+    assert isinstance(sheets_error, GoogleSheetsAPIError)
+    assert isinstance(sheets_error.__cause__, RefreshError)
+    assert fake_http.token_requests == 1
+    drive_client.delete_file.assert_not_called()
+
+
+def test_post_create_sheets_transport_failure_is_a_known_google_cause() -> None:
+    exporter, _, drive_client, _ = _build_exporter(clients=[])
+    transport_error = socket.timeout(RAW_DETAIL)
+    sheets_client, _ = sheets_client_failing_with(transport_error, "spreadsheet-123")
+    exporter.sheets_client_factory = Mock(return_value=sheets_client)
+
+    with pytest.raises(ReportExportError) as exc_info:
+        exporter.export_clients_report()
+
+    message = str(exc_info.value)
+    assert "Network error: the request timed out" in message
+    assert "unexpected" not in message
+    assert RAW_DETAIL not in message
+    assert "spreadsheet_id=spreadsheet-123" in message
+    assert "web_view_link=https://example.test/report" in message
+    assert isinstance(exc_info.value.__cause__, GoogleSheetsAPIError)
+    assert exc_info.value.__cause__.__cause__ is transport_error
+    drive_client.delete_file.assert_not_called()
+
+
+def test_from_env_requires_drive_folder_id(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        exporter_module,
+        "load_google_drive_config",
+        lambda: GoogleDriveConfig(tmp_path / "secret.json", tmp_path / "token.json", None),
+    )
+    monkeypatch.setattr(
+        exporter_module,
+        "load_google_sheets_config",
+        lambda: GoogleSheetsConfig(tmp_path / "service-account.json"),
+    )
+
+    with pytest.raises(ReportExportError, match="GOOGLE_DRIVE_FOLDER_ID must be set"):
+        ReportExporter.from_env()
+
+
+def test_from_env_propagates_config_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing_config():
+        raise ConfigError("Required environment variable GOOGLE_OAUTH_CLIENT_SECRET_PATH is not set.")
+
+    monkeypatch.setattr(exporter_module, "load_google_drive_config", missing_config)
+
+    with pytest.raises(ConfigError, match="GOOGLE_OAUTH_CLIENT_SECRET_PATH"):
+        ReportExporter.from_env()

@@ -3,12 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from google_integration._transport import TRANSPORT_ERRORS, describe_transport_error
 from google_integration.config import GoogleDriveConfig
 
 
@@ -137,6 +139,18 @@ class GoogleDriveClient:
             raise GoogleDriveOperationError(
                 f"Google Drive API request failed while {action}. "
                 f"HTTP status: {status_code}."
+            ) from error
+        except TRANSPORT_ERRORS as error:
+            raise GoogleDriveOperationError(
+                f"Google Drive API request failed while {action}. "
+                f"Network error: {describe_transport_error(error)}."
+            ) from error
+        except RefreshError as error:
+            # A token refreshed inside execute() (expired or rejected token). str(error)
+            # embeds the raw token-endpoint response, so it is only kept as the cause.
+            raise GoogleDriveAuthenticationError(
+                f"Google Drive API request failed while {action}. "
+                "Authentication error: Google OAuth credentials could not be refreshed."
             ) from error
 
     @staticmethod

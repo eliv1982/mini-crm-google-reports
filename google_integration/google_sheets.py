@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Sequence
 
+from google.auth.exceptions import RefreshError
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from google_integration.config import GoogleSheetsConfig
+from google_integration._transport import TRANSPORT_ERRORS, describe_transport_error
+from google_integration.config import ConfigError, GoogleSheetsConfig
+
+_INVALID_CREDENTIALS_MESSAGE = (
+    "Google service account credentials file is invalid or malformed. "
+    "Check GOOGLE_SERVICE_ACCOUNT_PATH."
+)
 
 
 class GoogleSheetsError(RuntimeError):
@@ -61,12 +69,33 @@ class GoogleSheetsClient:
             scopes=scopes,
         )
 
-    def _get_service(self) -> Any:
-        if self._service is None:
-            credentials = Credentials.from_service_account_file(
+    def _load_credentials(self) -> Credentials:
+        # The one place the configured key file's content is parsed. google-auth
+        # reports a bad file as a ValueError: JSONDecodeError / UnicodeDecodeError (not
+        # JSON, not UTF-8), MalformedError (missing fields), InvalidValue (private_key
+        # of the wrong type) and a bare ValueError for an unparseable private key.
+        # Valid JSON that is not an object is the exception: it escapes as a bare
+        # AttributeError from data.keys(), so it is checked up front rather than
+        # catching AttributeError. Anything else, I/O errors included, says nothing
+        # about the file's content and propagates unchanged. str(error) can embed file
+        # content, so it is only kept as the cause.
+        try:
+            self._require_json_object()
+            return Credentials.from_service_account_file(
                 str(self.credentials_path),
                 scopes=list(self.scopes),
             )
+        except ValueError as error:
+            raise ConfigError(_INVALID_CREDENTIALS_MESSAGE) from error
+
+    def _require_json_object(self) -> None:
+        with self.credentials_path.open(encoding="utf-8") as credentials_file:
+            if not isinstance(json.load(credentials_file), dict):
+                raise ValueError("Service account credentials must be a JSON object.")
+
+    def _get_service(self) -> Any:
+        if self._service is None:
+            credentials = self._load_credentials()
             self._service = self._service_builder(
                 "sheets",
                 "v4",
@@ -89,6 +118,18 @@ class GoogleSheetsClient:
             raise GoogleSheetsAPIError(
                 f"Google Sheets API request failed while {action}. "
                 f"HTTP status: {status_code}."
+            ) from error
+        except TRANSPORT_ERRORS as error:
+            raise GoogleSheetsAPIError(
+                f"Google Sheets API request failed while {action}. "
+                f"Network error: {describe_transport_error(error)}."
+            ) from error
+        except RefreshError as error:
+            # The service-account token is fetched inside the first execute(). str(error)
+            # embeds the raw token-endpoint response, so it is only kept as the cause.
+            raise GoogleSheetsAPIError(
+                f"Google Sheets API request failed while {action}. "
+                "Authentication error: Google service account credentials could not be refreshed."
             ) from error
 
     def _get_spreadsheet_metadata(self) -> dict[str, Any]:

@@ -99,3 +99,33 @@ def test_api_client_raises_on_health_request_failure() -> None:
 
     with pytest.raises(CRMAPIError, match="health check failed"):
         client.check_health()
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected_text"),
+    [
+        (
+            requests.ConnectionError(
+                "HTTPConnectionPool(host='api.test'): Max retries exceeded "
+                "(Caused by NewConnectionError('<urllib3.connection.HTTPConnection object at 0x1>'))"
+            ),
+            "could not connect to http://api.test",
+        ),
+        (requests.Timeout("read timed out"), "http://api.test timed out"),
+        (requests.TooManyRedirects("loop"), "TooManyRedirects while contacting http://api.test"),
+    ],
+)
+@pytest.mark.parametrize("operation", ["check_health", "get_all_clients"])
+def test_request_failures_produce_concise_message_and_keep_original_as_cause(
+    raised: Exception, expected_text: str, operation: str
+) -> None:
+    client = CRMAPIClient(base_url="http://api.test", session=FakeSession(exception=raised))
+
+    with pytest.raises(CRMAPIError) as exc_info:
+        getattr(client, operation)()
+
+    message = str(exc_info.value)
+    assert expected_text in message
+    assert "urllib3" not in message
+    assert "Max retries" not in message
+    assert exc_info.value.__cause__ is raised

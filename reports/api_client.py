@@ -42,7 +42,9 @@ class CRMAPIClient:
                 timeout=self.request_timeout,
             )
         except requests.RequestException as exc:
-            raise CRMAPIError(f"CRM API health check failed: {exc}") from exc
+            raise CRMAPIError(
+                f"CRM API health check failed: {self._describe_request_error(exc)}"
+            ) from exc
 
         if response.status_code != 200:
             raise CRMAPIError(
@@ -80,7 +82,9 @@ class CRMAPIClient:
                     timeout=self.request_timeout,
                 )
             except requests.RequestException as exc:
-                raise CRMAPIError(f"Failed to fetch {path}: {exc}") from exc
+                raise CRMAPIError(
+                    f"Failed to fetch {path}: {self._describe_request_error(exc)}"
+                ) from exc
 
             if response.status_code >= 400:
                 raise CRMAPIError(
@@ -104,6 +108,15 @@ class CRMAPIClient:
             offset += self.page_limit
 
         return records
+
+    def _describe_request_error(self, exc: requests.RequestException) -> str:
+        # str(exc) embeds urllib3 internals and localized OS text; the original
+        # exception stays available through exception chaining.
+        if isinstance(exc, requests.Timeout):
+            return f"request to {self.base_url} timed out"
+        if isinstance(exc, requests.ConnectionError):
+            return f"could not connect to {self.base_url}"
+        return f"{type(exc).__name__} while contacting {self.base_url}"
 
     @staticmethod
     def _safe_response_body(response: requests.Response) -> str:

@@ -4,11 +4,17 @@ from .analytics import (
     compute_tasks_analytics,
 )
 from .api_client import CRMAPIClient, CRMAPIError
-from .exporter import ReportExportError, ReportExportResult, ReportExporter
+from .exporter import (
+    EXPECTED_EXPORT_ERRORS,
+    ReportExportError,
+    ReportExportResult,
+    ReportExporter,
+)
 
 __all__ = [
     "CRMAPIClient",
     "CRMAPIError",
+    "EXPECTED_EXPORT_ERRORS",
     "ReportExportError",
     "ReportExportResult",
     "ReportExporter",

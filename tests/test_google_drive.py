@@ -4,7 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import httplib2
 import pytest
+from google.auth.exceptions import DefaultCredentialsError, RefreshError
 from googleapiclient.errors import HttpError
 
 from google_integration.config import ConfigError, GoogleDriveConfig, load_google_drive_config
@@ -12,6 +14,26 @@ from google_integration.google_drive import (
     GoogleDriveAuthenticationError,
     GoogleDriveClient,
     GoogleDriveOperationError,
+)
+from tests.auth_failures import (
+    DRIVE_AUTH_FAILURES,
+    DRIVE_AUTH_REASON,
+    RAW_AUTH_DETAIL,
+    drive_client_failing_auth,
+    drive_client_with_raising_credentials,
+)
+from tests.credential_files import (
+    DRIVE_AUTHENTICATION_MESSAGE,
+    MALFORMED_OAUTH_CLIENT_SECRET_FILES,
+    MALFORMED_OAUTH_TOKEN_FILES,
+    RAW_SECRET,
+    write_credential_file,
+)
+from tests.transport_failures import (
+    PROGRAMMING_ERRORS,
+    RAW_DETAIL,
+    TRANSPORT_FAILURES,
+    drive_client_failing_with,
 )
 
 
@@ -194,6 +216,68 @@ def test_authenticate_wraps_oauth_failures(tmp_path: Path) -> None:
         client.authenticate()
 
 
+# The malformed-file tests below run the real google-auth token loader and the real
+# google-auth-oauthlib client-secret parser against fake files. Both raise a mix of
+# JSONDecodeError, UnicodeDecodeError, ValueError, TypeError and AttributeError; all of
+# them already end up as a GoogleDriveAuthenticationError because authenticate() wraps
+# the whole credential-loading step.
+
+
+def _assert_safe_authentication_error(exc_info, *credential_paths: Path) -> None:
+    message = str(exc_info.value)
+    assert message == DRIVE_AUTHENTICATION_MESSAGE
+    assert RAW_SECRET not in message
+    for credential_path in credential_paths:
+        assert str(credential_path) not in message
+    assert exc_info.value.__cause__ is not None
+    assert not isinstance(exc_info.value.__cause__, GoogleDriveAuthenticationError)
+
+
+@pytest.mark.parametrize("content", MALFORMED_OAUTH_TOKEN_FILES)
+def test_malformed_oauth_token_file_raises_authentication_error(tmp_path: Path, content) -> None:
+    token_path = write_credential_file(tmp_path, content, "token.json")
+    flow_factory = MagicMock()
+    client = GoogleDriveClient(
+        client_secret_path=tmp_path / "client_secret.json",
+        token_path=token_path,
+        flow_factory=flow_factory,
+    )
+
+    with pytest.raises(GoogleDriveAuthenticationError) as exc_info:
+        client.authenticate()
+
+    _assert_safe_authentication_error(exc_info, token_path)
+    flow_factory.assert_not_called()
+
+
+@pytest.mark.parametrize("content", MALFORMED_OAUTH_CLIENT_SECRET_FILES)
+def test_malformed_oauth_client_secret_file_raises_authentication_error(
+    tmp_path: Path, content
+) -> None:
+    client_secret_path = write_credential_file(tmp_path, content, "client_secret.json")
+    client = GoogleDriveClient(
+        client_secret_path=client_secret_path,
+        token_path=tmp_path / "token.json",
+    )
+
+    with pytest.raises(GoogleDriveAuthenticationError) as exc_info:
+        client.authenticate()
+
+    _assert_safe_authentication_error(exc_info, client_secret_path)
+    assert not (tmp_path / "token.json").exists()
+
+
+def test_every_drive_operation_reports_a_malformed_credential_file(tmp_path: Path) -> None:
+    client = GoogleDriveClient(
+        client_secret_path=write_credential_file(tmp_path, "{not json", "client_secret.json"),
+        token_path=tmp_path / "token.json",
+        service_builder=MagicMock(),
+    )
+
+    with pytest.raises(GoogleDriveAuthenticationError, match="Failed to authenticate"):
+        client.list_files()
+
+
 def test_list_files_with_folder_id_filters_by_parent() -> None:
     service, files = _build_drive_service()
     files.list.return_value.execute.return_value = {
@@ -312,3 +396,129 @@ def test_http_errors_are_wrapped_in_google_drive_operation_error() -> None:
 
     with pytest.raises(GoogleDriveOperationError, match="HTTP status: 403"):
         client.list_files()
+
+
+@pytest.mark.parametrize(("make_error", "reason"), TRANSPORT_FAILURES)
+def test_transport_failures_are_wrapped_in_google_drive_operation_error(make_error, reason) -> None:
+    error = make_error()
+    client, http_stub = drive_client_failing_with(error)
+
+    with pytest.raises(GoogleDriveOperationError) as exc_info:
+        client.create_google_spreadsheet("CRM Export", "folder-123")
+
+    message = str(exc_info.value)
+    assert message == (
+        "Google Drive API request failed while creating spreadsheet 'CRM Export'. "
+        f"Network error: {reason}."
+    )
+    assert RAW_DETAIL not in message
+    assert exc_info.value.__cause__ is error
+    assert http_stub.calls == 1
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param(lambda client: client.list_files(), id="list-files"),
+        pytest.param(lambda client: client.list_files("folder-123"), id="list-folder"),
+        pytest.param(lambda client: client.get_file("file-123"), id="get-file"),
+        pytest.param(lambda client: client.delete_file("file-123"), id="delete-file"),
+    ],
+)
+def test_every_drive_operation_wraps_transport_failures(operation) -> None:
+    error = httplib2.ServerNotFoundError(RAW_DETAIL)
+    client, _ = drive_client_failing_with(error)
+
+    with pytest.raises(GoogleDriveOperationError, match="Network error") as exc_info:
+        operation(client)
+
+    assert RAW_DETAIL not in str(exc_info.value)
+    assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize("make_error", PROGRAMMING_ERRORS)
+def test_programming_errors_from_drive_execute_stay_unexpected(make_error) -> None:
+    error = make_error()
+    client, _ = drive_client_failing_with(error)
+
+    with pytest.raises(type(error)) as exc_info:
+        client.create_google_spreadsheet("CRM Export", "folder-123")
+
+    assert exc_info.value is error
+
+
+@pytest.mark.parametrize("make_failure", DRIVE_AUTH_FAILURES)
+def test_token_refresh_failures_are_wrapped_in_google_drive_authentication_error(
+    make_failure,
+) -> None:
+    client, fake_http = drive_client_failing_auth(make_failure)
+
+    with pytest.raises(GoogleDriveAuthenticationError) as exc_info:
+        client.create_google_spreadsheet("CRM Export", "folder-123")
+
+    message = str(exc_info.value)
+    assert message == (
+        "Google Drive API request failed while creating spreadsheet 'CRM Export'. "
+        f"{DRIVE_AUTH_REASON}"
+    )
+    assert RAW_AUTH_DETAIL not in message
+    assert "invalid_grant" not in message
+    assert isinstance(exc_info.value.__cause__, RefreshError)
+    assert fake_http.token_requests <= 1  # no retries
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        pytest.param(lambda client: client.list_files(), id="list-files"),
+        pytest.param(lambda client: client.get_file("file-123"), id="get-file"),
+        pytest.param(lambda client: client.delete_file("file-123"), id="delete-file"),
+    ],
+)
+def test_every_drive_operation_wraps_token_refresh_failures(operation) -> None:
+    error = RefreshError(("invalid_grant", {"error_description": RAW_AUTH_DETAIL}))
+    client = drive_client_with_raising_credentials(error)
+
+    with pytest.raises(GoogleDriveAuthenticationError, match="Authentication error") as exc_info:
+        operation(client)
+
+    assert RAW_AUTH_DETAIL not in str(exc_info.value)
+    assert exc_info.value.__cause__ is error
+
+
+def test_refresh_failure_during_authenticate_stays_a_drive_authentication_error(
+    tmp_path: Path,
+) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text("{}", encoding="utf-8")
+    error = RefreshError("invalid_grant")
+    credentials = _build_credentials(valid=False, expired=True, refresh_token="refresh-me")
+    credentials.refresh.side_effect = error
+    client = GoogleDriveClient(
+        client_secret_path=tmp_path / "client_secret.json",
+        token_path=token_path,
+        credentials_loader=MagicMock(return_value=credentials),
+    )
+
+    with pytest.raises(GoogleDriveAuthenticationError, match="Failed to authenticate") as exc_info:
+        client.authenticate()
+
+    assert exc_info.value.__cause__ is error
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        *PROGRAMMING_ERRORS,
+        # Auth errors that are not a failed token refresh are deliberately not caught.
+        pytest.param(lambda: DefaultCredentialsError("unrelated"), id="non-refresh-google-auth-error"),
+    ],
+)
+def test_unrelated_errors_raised_while_refreshing_credentials_stay_unexpected(make_error) -> None:
+    error = make_error()
+    client = drive_client_with_raising_credentials(error)
+
+    with pytest.raises(type(error)) as exc_info:
+        client.create_google_spreadsheet("CRM Export", "folder-123")
+
+    assert exc_info.value is error

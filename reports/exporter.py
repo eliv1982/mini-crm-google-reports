@@ -5,8 +5,11 @@ from datetime import datetime
 from typing import Any, Callable, Sequence
 
 from google_integration import (
+    ConfigError,
     GoogleDriveClient,
+    GoogleDriveError,
     GoogleSheetsClient,
+    GoogleSheetsError,
     load_google_drive_config,
     load_google_sheets_config,
 )
@@ -16,11 +19,23 @@ from .analytics import (
     compute_deals_analytics,
     compute_tasks_analytics,
 )
-from .api_client import CRMAPIClient
+from .api_client import CRMAPIClient, CRMAPIError
 
 
 class ReportExportError(RuntimeError):
     """Raised when a CRM report cannot be exported successfully."""
+
+
+# Project exceptions that describe expected operational failures (configuration,
+# backend connectivity, Google APIs). Entry points show their messages to the user;
+# any other exception is treated as an unexpected bug.
+EXPECTED_EXPORT_ERRORS = (
+    ConfigError,
+    CRMAPIError,
+    GoogleDriveError,
+    GoogleSheetsError,
+    ReportExportError,
+)
 
 
 @dataclass(frozen=True)
@@ -278,6 +293,7 @@ class ReportExporter:
         except Exception as exc:
             raise ReportExportError(
                 f"Failed to export {report_type} report after spreadsheet creation. "
+                f"Cause: {self._describe_failure(exc)}. "
                 f"spreadsheet_id={spreadsheet_id}. "
                 f"web_view_link={web_view_link or '<unavailable>'}."
             ) from exc
@@ -388,6 +404,14 @@ class ReportExporter:
             total_columns=max(len(data_headers), 2),
         )
         return rows, layout
+
+    @staticmethod
+    def _describe_failure(exc: Exception) -> str:
+        # Only project exceptions carry messages written to be shown to users;
+        # for anything else expose just the type and rely on exception chaining.
+        if isinstance(exc, EXPECTED_EXPORT_ERRORS):
+            return str(exc).rstrip(".")
+        return f"unexpected {type(exc).__name__}"
 
     @staticmethod
     def _build_range_name(sheet_name: str, start_cell: str, end_cell: str) -> str:
